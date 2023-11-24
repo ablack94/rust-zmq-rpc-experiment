@@ -115,6 +115,19 @@ async fn main() {
 
     let store = Arc::new(store);
 
+    let sender = tokio::spawn(async move {
+        loop {
+            let mut buffer = Vec::new();
+            let count = rxq.recv_many(&mut buffer, 100_000).await;
+            if count > 0 {
+                for msg in buffer {
+                    tx.feed(msg).await.expect("feed failed");
+                }
+            }
+            tx.flush().await.expect("flush failed");
+        }
+    });
+
     let receiver = tokio::spawn({
         let msg_counter = msg_counter.clone();
         async move {
@@ -129,7 +142,8 @@ async fn main() {
                         msg.0[1] = "".into();
                     }
                 };
-                tx.send(msg).await.expect("send failed");
+                txq.send(msg).expect("txq failed");
+                //tx.send(msg).await.expect("send failed");
                 let end = tokio::time::Instant::now();
                 //log::info!("delay={} us", (end - start).as_micros());
             }
