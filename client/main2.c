@@ -27,27 +27,13 @@ intmax_t now() {
 int main()
 {
     void *context = zmq_ctx_new();
-    void *sock = zmq_socket(context, ZMQ_REQ);
+    void *sock = zmq_socket(context, ZMQ_DEALER);
     zmq_connect(sock, "tcp://localhost:9999");
 
     const char req[] = "1";
 
     while(1) {
-
-        intmax_t start = now();
-
-        for(size_t idx=0; idx<1000;++idx) {
-            //printf("Requesting ID for %s\n", req);
-            zmq_send(sock, req, strlen(req), 0);
-            //printf("Waiting for response...\n");
-            char recv[100] = {};
-            zmq_recv(sock, recv, sizeof(recv), 0);
-            //printf("id=%s\n", recv);
-        }
-
-        intmax_t end = now();
-        intmax_t delta = (end - start);
-        printf("1000 packets in %ld ~%f ms\n", delta, delta / 1000.);
+    	zmq_send(sock, req, strlen(req), 0);
     }
 
     zmq_close(sock);
