@@ -33,7 +33,12 @@ int main()
     const char req[] = "1";
 
     while(1) {
+        //printf("Send\n");
     	zmq_send(sock, req, strlen(req), 0);
+        //printf("Recv\n");
+        char buf[1024] = {};
+        zmq_recv(sock, buf, 1024, 0);
+        //printf("response: %s",  buf);
     }
 
     zmq_close(sock);

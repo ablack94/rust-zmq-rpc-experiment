@@ -90,15 +90,10 @@ fn parse_request_from_zmq(msg: &Multipart) -> Option<RequestDescription> {
     }
 }
 
-fn main() {
+#[tokio::main(flavor="multi_thread", worker_threads=10)]
+async fn main() {
     fast_log::init(fast_log::Config::new().console().chan_len(Some(1_000_000)))
         .expect("Failed to init logging");
-
-    let rt2 = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(10)
-        .enable_all()
-        .build()
-        .expect("Unable to build rt2");
 
     let context = tmq::Context::new();
     let router = tmq::router::router(&context)
@@ -134,14 +129,14 @@ fn main() {
                 }
 
                 if count > 0 {
-                    let start = tokio::time::Instant::now();
+                    //let start = tokio::time::Instant::now();
                     tx.flush().await.expect("flush failed");
-                    let end = tokio::time::Instant::now();
-                    log::info!(
-                        "flushing {} messages {} us",
-                        count,
-                        (end - start).as_micros()
-                    );
+                    //let end = tokio::time::Instant::now();
+                    //log::info!(
+                    //    "flushing {} messages {} us",
+                    //    count,
+                    //    (end - start).as_micros()
+                    //);
                 }
             }
         })
@@ -154,7 +149,7 @@ fn main() {
             rt.block_on(async move {
                 loop {
                     if let Some(msg) = rx.next().await {
-                        rt2.spawn({
+                        tokio::spawn({
                             let msg_counter = msg_counter.clone();
                             let store = store.clone();
                             let txq = txq.clone();
@@ -167,17 +162,17 @@ fn main() {
                                             let txq = txq.clone();
                                             async move {
                                                 let mut msg = msg;
-                                                let a = msg.0[2].as_str().unwrap();
+                                                let a = msg.0[1].as_str().unwrap();
 
                                                 match store.data.get(a) {
                                                     Some(value) => {
-                                                        msg.0[2] = (&value).into();
+                                                        msg.0[1] = (&value).into();
                                                         txq.send(msg)
                                                             //.await
                                                             .expect("Send to internal txq failed");
                                                     }
                                                     None => {
-                                                        msg.0[2] = "No record".into();
+                                                        msg.0[1] = "No record".into();
                                                         txq.send(msg)
                                                             //.await
                                                             .expect("Send to internal txq failed");
