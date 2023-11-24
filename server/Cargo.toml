@@ -10,7 +10,8 @@ futures = "0.3"
 thiserror = "1"
 num-format = "0.4.4"
 async-trait = "0.1.74"
-tokio = { version = "1.34.0", features = ["full"] }
+tokio = { version = "1.34.0", features = ["full", "tracing"] }
+console-subscriber = "0.2.0"
 tmq = "0.4.0"
 atomic-counter = "1"
 zmq = "0.10.0"

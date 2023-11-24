@@ -90,17 +90,21 @@ fn parse_request_from_zmq(msg: &Multipart) -> Option<RequestDescription> {
     }
 }
 
-#[tokio::main(flavor="multi_thread", worker_threads=10)]
+#[tokio::main(flavor="multi_thread", worker_threads=1)]
 async fn main() {
+    console_subscriber::init();
+
     fast_log::init(fast_log::Config::new().console().chan_len(Some(1_000_000)))
         .expect("Failed to init logging");
 
     let context = tmq::Context::new();
+    context.set_io_threads(2).unwrap();
+    log::info!("IO threads {}", context.get_io_threads().unwrap());
     let router = tmq::router::router(&context)
         .bind("tcp://127.0.0.1:9999")
         .expect("Unable to bind router");
     let (mut tx, mut rx) = router.split::<Multipart>();
-    let (txq, mut rxq) = crossbeam::channel::unbounded::<Multipart>();
+    let (txq, mut rxq) = tokio::sync::mpsc::unbounded_channel::<Multipart>();
 
     let msg_counter = Arc::new(atomic_counter::RelaxedCounter::new(0));
 
@@ -111,85 +115,24 @@ async fn main() {
 
     let store = Arc::new(store);
 
-    let sender = std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Unable to create runtime");
-        rt.block_on(async {
-            'a: loop {
-                let mut count = 0;
-
-                while count < 1_000_000 {
-                    match rxq.try_recv() {
-                        Ok(msg) => {
-                            tx.feed(msg).await.expect("feed failed");
-                            count += 1;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Empty) => break,
-                        Err(_) => break 'a,
-                    };
-                }
-
-                if count > 0 {
-                    //let start = tokio::time::Instant::now();
-                    tx.flush().await.expect("flush failed");
-                    //let end = tokio::time::Instant::now();
-                    //log::info!(
-                    //    "flushing {} messages {} us",
-                    //    count,
-                    //    (end - start).as_micros()
-                    //);
-                }
-            }
-        })
-    });
-
-    let receiver = std::thread::spawn({
+    let receiver = tokio::spawn({
         let msg_counter = msg_counter.clone();
-        move || {
-            let rt = tokio::runtime::Runtime::new().expect("Unable to make receiver runtime");
-            rt.block_on(async move {
-                loop {
-                    if let Some(msg) = rx.next().await {
-                        tokio::spawn({
-                            let msg_counter = msg_counter.clone();
-                            let store = store.clone();
-                            let txq = txq.clone();
-                            async move {
-                                match msg {
-                                    Ok(msg) => {
-                                        msg_counter.inc();
-                                        tokio::spawn({
-                                            let store = store.clone();
-                                            let txq = txq.clone();
-                                            async move {
-                                                let mut msg = msg;
-                                                let a = msg.0[1].as_str().unwrap();
-
-                                                match store.data.get(a) {
-                                                    Some(value) => {
-                                                        msg.0[1] = (&value).into();
-                                                        txq.send(msg)
-                                                            //.await
-                                                            .expect("Send to internal txq failed");
-                                                    }
-                                                    None => {
-                                                        msg.0[1] = "No record".into();
-                                                        txq.send(msg)
-                                                            //.await
-                                                            .expect("Send to internal txq failed");
-                                                    }
-                                                };
-                                            }
-                                        });
-                                    }
-                                    Err(err) => {
-                                        log::error!("Error receiving message {}", err);
-                                    }
-                                }
-                            }
-                        });
+        async move {
+            while let Some(Ok(mut msg)) = rx.next().await {
+                msg_counter.inc();
+                let start = tokio::time::Instant::now();
+                match store.data.get(msg.0[1].as_str().unwrap()) {
+                    Some(value) => {
+                        msg.0[1] = value.into();
+                    },
+                    None => {
+                        msg.0[1] = "".into();
                     }
-                }
-            });
+                };
+                tx.send(msg).await.expect("send failed");
+                let end = tokio::time::Instant::now();
+                //log::info!("delay={} us", (end - start).as_micros());
+            }
         }
     });
 
@@ -205,5 +148,6 @@ async fn main() {
         }
     });
 
-    sender.join();
+    receiver.await;
+
 }
