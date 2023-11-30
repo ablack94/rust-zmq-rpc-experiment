@@ -27,18 +27,18 @@ intmax_t now() {
 int main()
 {
     void *context = zmq_ctx_new();
-    void *sock = zmq_socket(context, ZMQ_DEALER);
+    void *sock = zmq_socket(context, ZMQ_REQ);
     zmq_connect(sock, "tcp://localhost:9999");
 
     const char req[] = "1";
 
     while(1) {
-        //printf("Send\n");
+        printf("Send\n");
     	zmq_send(sock, req, strlen(req), 0);
-        //printf("Recv\n");
+        printf("Recv\n");
         char buf[1024] = {};
         zmq_recv(sock, buf, 1024, 0);
-        //printf("response: %s\n",  buf);
+        printf("response: %s\n",  buf);
     }
 
     zmq_close(sock);

@@ -1,3 +1,4 @@
+use std::thread;
 use std::{ops::Index, sync::Arc};
 
 use atomic_counter::AtomicCounter;
@@ -5,7 +6,7 @@ use futures::TryStreamExt;
 use futures::{SinkExt, StreamExt};
 use num_format::Locale;
 use num_format::ToFormattedString;
-use tmq::{Message, Multipart};
+use tmq::{Message, Multipart, SocketExt};
 
 #[derive(thiserror::Error, Debug)]
 pub enum LookupError {
@@ -90,23 +91,29 @@ fn parse_request_from_zmq(msg: &Multipart) -> Option<RequestDescription> {
     }
 }
 
-#[tokio::main(flavor="multi_thread", worker_threads=1)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
     console_subscriber::init();
 
-    fast_log::init(fast_log::Config::new().console().chan_len(Some(1_000_000)))
-        .expect("Failed to init logging");
+    fast_log::init(
+        fast_log::Config::new()
+            .console()
+            .chan_len(Some(100_000_000)),
+    )
+    .expect("Failed to init logging");
 
     let context = tmq::Context::new();
-    context.set_io_threads(2).unwrap();
+    context.set_io_threads(4).unwrap();
     log::info!("IO threads {}", context.get_io_threads().unwrap());
     let router = tmq::router::router(&context)
         .bind("tcp://127.0.0.1:9999")
         .expect("Unable to bind router");
+
     let (mut tx, mut rx) = router.split::<Multipart>();
     let (txq, mut rxq) = tokio::sync::mpsc::unbounded_channel::<Multipart>();
 
     let msg_counter = Arc::new(atomic_counter::RelaxedCounter::new(0));
+    let tx_counter = Arc::new(atomic_counter::RelaxedCounter::new(0));
 
     let mut store = MemoryStore::new();
     store.add_record("1", "abcd");
@@ -115,53 +122,58 @@ async fn main() {
 
     let store = Arc::new(store);
 
-    let sender = tokio::spawn(async move {
-        loop {
-            let mut buffer = Vec::new();
-            let count = rxq.recv_many(&mut buffer, 100_000).await;
-            if count > 0 {
-                for msg in buffer {
-                    tx.feed(msg).await.expect("feed failed");
-                }
-            }
-            tx.flush().await.expect("flush failed");
-        }
-    });
-
-    let receiver = tokio::spawn({
-        let msg_counter = msg_counter.clone();
-        async move {
-            while let Some(Ok(mut msg)) = rx.next().await {
-                msg_counter.inc();
-                let start = tokio::time::Instant::now();
-                match store.data.get(msg.0[1].as_str().unwrap()) {
-                    Some(value) => {
-                        msg.0[1] = value.into();
-                    },
-                    None => {
-                        msg.0[1] = "".into();
-                    }
-                };
-                txq.send(msg).expect("txq failed");
-                //tx.send(msg).await.expect("send failed");
-                let end = tokio::time::Instant::now();
-                //log::info!("delay={} us", (end - start).as_micros());
-            }
-        }
-    });
-
     std::thread::spawn({
         let msg_counter = msg_counter.clone();
+        let tx_counter = tx_counter.clone();
         move || loop {
             let start = std::time::Instant::now();
             std::thread::sleep(std::time::Duration::from_secs(1));
             let end = std::time::Instant::now();
             let seconds = (end - start).as_secs();
-            let value = msg_counter.reset() as u64 / seconds;
-            log::info!("msgs/s {}", value.to_formatted_string(&Locale::en));
+            let rx = msg_counter.reset() as u64 / seconds;
+            let tx = tx_counter.reset() as u64 / seconds;
+            log::info!(
+                "rx {} msgs/s  tx {} msgs/s",
+                rx.to_formatted_string(&Locale::en),
+                tx.to_formatted_string(&Locale::en)
+            );
         }
     });
 
-    receiver.await;
+    let mut crx = rx.ready_chunks(1_000_000);
 
+    while let Some(chunks) = crx.next().await {
+        let count = chunks.len();
+        log::info!("chunk: {}", count);
+        for result in chunks {
+            match result {
+                Ok(mut msg) => {
+                    msg_counter.inc();
+
+                    let sep_idx = msg.0.iter().position(|x| x.is_empty());
+                    let idx = match sep_idx {
+                        Some(pos) => pos + 1,
+                        None => 1,
+                    };
+
+                    match store.data.get(msg.0[idx].as_str().unwrap()) {
+                        Some(value) => {
+                            msg.0[idx] = value.into();
+                        }
+                        None => {
+                            msg.0[idx] = "No Value".into();
+                        }
+                    };
+
+                    tx.send(msg).await.expect("send failed");
+                    tx_counter.inc();
+                }
+                Err(err) => {
+                    panic!("{}", err);
+                }
+            }
+        }
+    }
+
+    panic!("died");
 }

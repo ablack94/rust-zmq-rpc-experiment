@@ -32,38 +32,36 @@ int main()
     assert(sock != NULL);
     int one = 1;
     size_t size_one = sizeof(one);
-    int recv_timeout_ms = 5000;
+    int recv_timeout_ms = 1000;
+    int sndhwm = 10000000;
     assert(0 == zmq_setsockopt(sock, ZMQ_REQ_RELAXED, (const void*)&one, sizeof(one)));
     assert(0 == zmq_setsockopt(sock, ZMQ_REQ_CORRELATE, (const void*)&one, sizeof(one)));
-    //assert(0 == zmq_setsockopt(sock, ZMQ_RCVTIMEO, (const void*)&recv_timeout_ms, sizeof(recv_timeout_ms)));
+    assert(0 == zmq_setsockopt(sock, ZMQ_RCVTIMEO, (const void*)&recv_timeout_ms, sizeof(recv_timeout_ms)));
+    assert(0 == zmq_setsockopt(sock, ZMQ_SNDHWM, (const void*)&sndhwm, sizeof(sndhwm)));
     zmq_connect(sock, "tcp://localhost:9999");
 
     const char req[] = "1";
 
-    while(1) {
-
+    while(1)
+    {
         intmax_t start = now();
+        char buf[1024] = {};
 
-        for(size_t idx=0; idx<1000;++idx) {
-            intmax_t req_s = now();
-            printf("Requesting ID for %s\n", req);
-            zmq_send(sock, req, strlen(req), 0);
-            printf("Waiting for response...\n");
-            char recv[100] = {};
-            if(zmq_recv(sock, recv, sizeof(recv), 0) < 0)
+        for(size_t idx=0; idx<1000;++idx)
+        {
+            if(-1 == zmq_send(sock, req, strlen(req), ZMQ_DONTWAIT))
             {
                 switch(errno)
                 {
                 case EAGAIN:
-                    printf("timeout\n");
+                    //printf("recv\n");
+                    zmq_recv(sock, &buf, 1024, 0);
                     break;
                 default:
-                    printf("Something bad happened %s\n", strerror(errno));
+                    printf("Uhoh %s\n", strerror(errno));
                     abort();
                 }
             }
-            intmax_t req_e = now();
-            printf("id=%s %f ms\n", recv, (req_e - req_s) / 1000.);
         }
 
         intmax_t end = now();
